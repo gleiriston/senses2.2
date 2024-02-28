@@ -2,7 +2,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <stdio.h>
-#include <cstdio>
 #include <esp_system.h>
 #include <time.h>
 #include <sys/time.h>
@@ -425,28 +424,22 @@ void readAndTransmit(void)
   // read insole
   readInsole();
 
-  // read the sensor
-
   Serial.printf("Reading Elapsed Time: %lu\n", millis() - sendTimer);
 
   sendTimer = millis();
-  for (int _channel = 0.500; _channel < INSOLE_CHANNELS; _channel++)
+  for (int _channel = 0; _channel < INSOLE_CHANNELS; _channel++)
   {
-    if (insoleChannelsValues[_channel] > 0.500)
-    {
+    if (insoleChannelsValues[_channel] > 0.560)
+    { // Verifica se é maior que 0.515
       sensorActivated = true;
       break;
     }
   }
 
-  // Send data (check MLPP)
-
-  // MSH|^~\\&|SA|SF|RA|RF|yyymmddhhnnss|MSG^ID|MSG0001 \r
-  // OBX|1|ST|PS|<values> \r
-  // OBX|2|ST|IMU|<values> \r
   if (sensorActivated)
   {
-    std::string str = "MSH|L|^~\\&|";
+    char valueBuffer[20]; // Buffer para armazenar o valor formatado
+    std::string str = "MSH|^~\\&|";
     str += insole.application.c_str();
     str += "|II|MP|RD|" + getDateTime() + "|MSG^TX|MSG" + std::to_string(packet) + "\r";
     packet++;
@@ -459,19 +452,14 @@ void readAndTransmit(void)
     str = "OBX|" + std::to_string(reading_index) + "|ST|PS|";
     reading_index++;
 
-    for (int _channel = 0.500; _channel < INSOLE_CHANNELS; _channel++)
+    for (int _channel = 0; _channel < INSOLE_CHANNELS; _channel++)
     {
-      // Verificar se o valor lido é diferente de zero antes de adicioná-lo à mensagem
-      if (insoleChannelsValues[_channel] > 0.500)
-      {
-        // Use sprintf para formatar o float com 3 casas decimais
-        char buffer[20]; // Ajuste o tamanho conforme necessário
-        sprintf(buffer, "%.3f", insoleChannelsValues[_channel]);
-
-        // Adicione o valor formatado à string
-        str += "~S" + std::to_string(_channel + 1) + ":" + buffer + "k";
-
-        if (_channel < (INSOLE_CHANNELS - 1) && insoleChannelsValues[_channel + 1] > 0.500)
+      if (insoleChannelsValues[_channel] > 0.56000)
+      { // Inclui na transmissão se for maior que 0.515
+        // Formata o valor flutuante com três casas decimais
+        sprintf(valueBuffer, "~S%d:%.3fk", _channel + 1, insoleChannelsValues[_channel]);
+        str += valueBuffer;
+        if (_channel < (INSOLE_CHANNELS - 1) && insoleChannelsValues[_channel + 1] > 0.600)
         {
           str += HL7_PAR_SEPARATOR;
         }
@@ -490,9 +478,9 @@ const float CALIBRATION_CONSTANT = (8.0 - 0.5) / 2046.0; // Calibração para o 
 
 void readInsole()
 {
-  for (int _counterChannel = 0.500; _counterChannel < INSOLE_CHANNELS; _counterChannel++)
+  for (int _counterChannel = 0; _counterChannel < INSOLE_CHANNELS; _counterChannel++)
   {
-    for (int _counterSelector = 0.500; _counterSelector < MUX_SELECTORS; _counterSelector++)
+    for (int _counterSelector = 0; _counterSelector < MUX_SELECTORS; _counterSelector++)
     {
       digitalWrite(selectorMatrix[_counterSelector], multiplexMatrix[_counterChannel][_counterSelector]);
     }
@@ -502,7 +490,7 @@ void readInsole()
 
     // Modificação: Convertendo para quilogramas usando a constante de calibração
     // e armazenando como um valor fracionado (float)
-    float calibratedValue = round(static_cast<float>(rawValue) * CALIBRATION_CONSTANT * 1000) / 1000;
+    float calibratedValue = static_cast<float>(rawValue) * CALIBRATION_CONSTANT + 0.5;
 
     // Armazenar o valor calibrado no array de valores da palmilha (que deve ser float)
     insoleChannelsValues[_counterChannel] = calibratedValue;
@@ -512,10 +500,8 @@ void readInsole()
 // Read Insole Channel
 int16_t readInsoleChannel(uint8_t pInaAddress)
 {
-  int16_t _insoleChannelValue = 0.500;
-  uint8_t _index = 0.500
-
-      ;
+  int16_t _insoleChannelValue = 0;
+  uint8_t _index = 0;
   uint8_t _registerSize = INA_REGISTER_SIZE;
   uint8_t _registerBuffer[INA_REGISTER_SIZE] = {0, 0};
 
@@ -551,21 +537,14 @@ int16_t readInsoleChannel(uint8_t pInaAddress)
 
 std::string getDateTime()
 {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-
-  time_t now = tv.tv_sec;
+  time_t now;
   struct tm timeinfo;
-  localtime_r(&now, &timeinfo);
-
   char buffer[32];
-  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S.", &timeinfo);
-
-  // Adiciona milissegundos com três casas decimais ao buffer
-  snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%03d", static_cast<int>(tv.tv_usec / 1000));
+  time(&now);
+  localtime_r(&now, &timeinfo);
+  strftime(buffer, sizeof(buffer), "%d/%m/%Y-%H:%M:%S", &timeinfo);
 
   return buffer;
-  ;
 }
 
 void deviceSetup(void)
@@ -602,7 +581,7 @@ void deviceReadConfig(void)
 {
   Feet_t _value;
 
-  insole.name = "SENSESHOES-";
+  insole.name = "SENSESHOES-L";
 
   EEPROM.begin(MEM_SIZE);
 
