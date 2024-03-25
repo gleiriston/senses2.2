@@ -1,6 +1,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <sstream>
 #include <stdio.h>
 #include <esp_system.h>
 #include <time.h>
@@ -27,6 +28,24 @@
 #define DEVICE_DELAY_LOOP_LOW_MS 500
 #define DEVICE_RESET_MS 1000
 #define DEVICE_SAMPLE_TEST 5
+//  BATERIA
+// Endereço do MAX17048
+#define ADDRESS_MAX17048 0x36
+// Registradores do MAX17048
+#define VCELL 0x02
+#define SOC 0x04
+#define MODE 0x06
+#define VERSION 0x08
+#define HIBRT 0x0A
+#define CONFIG 0x0C
+#define VALRT 0x14
+#define CRATE 0x16
+#define VRESET_ID 0x18
+#define STATUS 0x1A
+#define CMD 0xFE
+
+#define fator_tensao_ADC 1.25E-03
+#define fator_valor_SOC 3.9065E-03
 
 // INA
 #define INA_ADDRESS (uint8_t)0x40
@@ -108,6 +127,20 @@ typedef struct
 
 } INASetup_t;
 
+typedef struct
+{
+  float x;
+  float y;
+  float z;
+} ImuVector_t;
+
+typedef struct
+{
+  ImuVector_t acc;
+  ImuVector_t gyro;
+  float temp;
+} Imu_t;
+
 typedef enum
 {
   ftNone = char('N'),
@@ -131,6 +164,14 @@ typedef struct
  * @brief Function Prototypes
  *
  */
+// Variáveis para armazenar os dados da bateria
+float VCELL_bateria = 0;
+float SOC_bateria = 0;
+
+// Funções para leitura e escrita no MAX17048
+void Write_MAX17048(uint8_t addressRegister, uint16_t data);
+uint16_t Read_MAX17048(uint8_t addressRegister);
+String VCELL_SOC = "";
 
 void deviceSetup(void);
 void deviceUpdate(void);
@@ -142,6 +183,7 @@ void deviceSetFeet(uint8_t pFoot);
 void deviceRestart(void);
 
 void inaInit(void);
+void imuInit(void);
 void bleInit(void);
 
 void readAndTransmit(void);
@@ -159,6 +201,7 @@ std::string getDateTime();
  * @brief Global Variables
  *
  */
+ICM42688 IMU(SPI, 5);
 
 BLEServer *pServer = NULL;
 
@@ -279,12 +322,19 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks
 
 void setup()
 {
+
   Serial.begin(SERIAL_BAUD_RATE);
 
   deviceSetup();
   statusInit();
   inaInit();
+  imuInit();
   bleInit();
+
+  Wire1.begin(4, 16);
+  Wire1.setClock(400000);
+
+  delay(5000);
 }
 
 /**
@@ -377,6 +427,41 @@ void inaInit(void)
   inaSetup.d1 = (inaSetup.data & 0xFF00) >> 8;
   inaSetup.d2 = inaSetup.data & 0x00FF;
 }
+Imu_t imuData = {0};
+void imuInit(void)
+{
+  imuData.acc.x = 0;
+  imuData.acc.y = 0;
+  imuData.acc.z = 0;
+  imuData.gyro.x = 0;
+  imuData.gyro.y = 0;
+  imuData.gyro.z = 0;
+  imuData.temp = 0;
+  // start communication with IMU
+  int status = IMU.begin();
+  if (status < 0)
+  {
+    Serial.println("[INFO] IMU initialization unsuccessful");
+    Serial.println("[INFO] Check IMU wiring or try cycling power");
+    Serial.print("[INFO] Status: ");
+    Serial.println(status);
+    while (1)
+    {
+    }
+  }
+
+  // setting the aaccelerometer full scale range to +/-8G
+  IMU.setAccelFS(ICM42688::gpm8);
+
+  // setting the gyroscope full scale range to +/-50deg/s
+  IMU.setGyroFS(ICM42688::dps500);
+
+  // set output data rate to 12.5Hz
+  IMU.setAccelODR(ICM42688::odr12_5);
+
+  // set output data rate to 12.5Hz
+  IMU.setGyroODR(ICM42688::odr12_5);
+}
 
 void bleInit(void)
 {
@@ -423,6 +508,73 @@ void readAndTransmit(void)
 
   // read insole
   readInsole();
+  {
+    // Adiciona os dados da bateria à string
+    // Supondo que VCELL_bateria e SOC_bateria sejam do tipo double
+    double VCELL_bateria_atual = fator_tensao_ADC * (Read_MAX17048(VCELL) >> 4);
+    double SOC_bateria_atual = fator_valor_SOC * Read_MAX17048(SOC);
+
+    // Definir uma variável para controlar a primeira notificação
+    static bool primeira_notificacao = true;
+    // Verificar se as mudanças atendem aos critérios para enviar uma notificação
+    bool enviar_notificacao = false;
+    if (std::abs(VCELL_bateria_atual - VCELL_bateria) >= 1.0 || std::abs(SOC_bateria_atual - SOC_bateria) >= 1.0 || std::abs(SOC_bateria_atual - SOC_bateria) >= 0.01)
+    {
+      enviar_notificacao = true;
+      VCELL_bateria = VCELL_bateria_atual;
+      SOC_bateria = SOC_bateria_atual;
+    }
+
+    // Se houver uma mudança significativa ou é a primeira notificação, enviar a notificação
+    if (enviar_notificacao || primeira_notificacao)
+    {
+      // Converter os valores para string com duas casas decimais
+      std::string strVCELL = std::to_string(VCELL_bateria);
+      std::string strSOC = std::to_string(SOC_bateria);
+      size_t found = strVCELL.find('.');
+      if (found != std::string::npos && strVCELL.size() > found + 3)
+      {
+        strVCELL = strVCELL.substr(0, found + 3); // Manter apenas duas casas decimais
+      }
+      found = strSOC.find('.');
+      if (found != std::string::npos && strSOC.size() > found + 3)
+      {
+        strSOC = strSOC.substr(0, found + 3); // Manter apenas duas casas decimais
+      }
+
+      // Concatenar os valores formatados à string str
+      std::string str = "OBX|CELL: " + strVCELL + "~SOC:" + strSOC + "%" + getDateTime() + "\r";
+      pCharacteristic->setValue(str.c_str());
+      pCharacteristic->notify();
+      primeira_notificacao = false;
+      str += "\r";
+      vTaskDelay(pdMS_TO_TICKS(device.delayLoop));
+    }
+    // Leitura dos dados do sensor ICM42688
+    IMU.getAGT(); // Obtém aceleração, giroscópio e temperatura
+
+    // Formata os dados para transmissão
+    char imuData[256];
+    snprintf(imuData, sizeof(imuData),
+             "IMU: Accel: X=%.2f Y=%.2f Z=%.2f, Gyro: X=%.2f Y=%.2f Z=%.2f, Temp=%.2f",
+             IMU.accX(), IMU.accY(), IMU.accZ(),
+             IMU.gyrX(), IMU.gyrY(), IMU.gyrZ(),
+             IMU.temp());
+
+    // Transmitting the IMU
+    std::string str = "OBX|" + std::to_string(reading_index++) + "|ST|IMU|";
+    str += std::to_string(IMU.accX()) + HL7_PAR_SEPARATOR;
+    str += std::to_string(IMU.accY()) + HL7_PAR_SEPARATOR;
+    str += std::to_string(IMU.accZ()) + HL7_PAR_SEPARATOR;
+    str += std::to_string(IMU.gyrX()) + HL7_PAR_SEPARATOR;
+    str += std::to_string(IMU.gyrY()) + HL7_PAR_SEPARATOR;
+    str += std::to_string(IMU.gyrZ()) + HL7_PAR_SEPARATOR;
+    str += std::to_string(IMU.temp());
+    str += "\r";
+    pCharacteristic->setValue((char *)str.c_str());
+    pCharacteristic->notify();
+    vTaskDelay(pdMS_TO_TICKS(device.delayLoop));
+  }
 
   Serial.printf("Reading Elapsed Time: %lu\n", millis() - sendTimer);
 
@@ -446,15 +598,13 @@ void readAndTransmit(void)
     pCharacteristic->setValue((char *)str.c_str());
     pCharacteristic->notify();
 
-    reading_index = 1;
-
     // Transmitting the Insole
     str = "OBX|" + std::to_string(reading_index) + "|ST|PS|";
     reading_index++;
 
     for (int _channel = 0; _channel < INSOLE_CHANNELS; _channel++)
     {
-      if (insoleChannelsValues[_channel] > 0.56000)
+      if (insoleChannelsValues[_channel] > 0.600)
       { // Inclui na transmissão se for maior que 0.515
         // Formata o valor flutuante com três casas decimais
         sprintf(valueBuffer, "~S%d:%.3fk", _channel + 1, insoleChannelsValues[_channel]);
@@ -465,7 +615,6 @@ void readAndTransmit(void)
         }
       }
     }
-
     str += "\r";
     pCharacteristic->setValue((char *)str.c_str());
     pCharacteristic->notify();
@@ -715,6 +864,37 @@ void deviceProcessIncomingData(std::string pMessage)
   }
 
   device.pendingUpdate = true;
+}
+void Write_MAX17048(uint8_t addressRegister, uint16_t data)
+{
+
+  uint8_t D[3] = {0, 0, 0};
+
+  D[0] = addressRegister;
+  D[1] = (data & 0xFF00) >> 8;
+  D[2] = (data & 0x00FF);
+
+  Wire1.beginTransmission(ADDRESS_MAX17048);
+  Wire1.write(D, sizeof(D));
+  Wire1.endTransmission();
+}
+
+uint16_t Read_MAX17048(uint8_t addressRegister)
+{
+
+  uint8_t D[2] = {0, 0};
+  uint16_t valueDigital = 0;
+
+  Wire1.beginTransmission(ADDRESS_MAX17048);
+  Wire1.write(addressRegister);
+  Wire1.endTransmission();
+
+  Wire1.requestFrom(ADDRESS_MAX17048, 2);
+  Wire1.readBytes(D, 2);
+
+  valueDigital = (D[0] << 8) | D[1];
+
+  return valueDigital;
 }
 
 void deviceUpdateStatus(void)
