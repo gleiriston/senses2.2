@@ -604,12 +604,12 @@ void readAndTransmit(void)
 
     for (int _channel = 0; _channel < INSOLE_CHANNELS; _channel++)
     {
-      if (insoleChannelsValues[_channel] > 0.600)
+      if (insoleChannelsValues[_channel] > 0.500)
       { // Inclui na transmissão se for maior que 0.515
         // Formata o valor flutuante com três casas decimais
         sprintf(valueBuffer, "~S%d:%.3fk", _channel + 1, insoleChannelsValues[_channel]);
         str += valueBuffer;
-        if (_channel < (INSOLE_CHANNELS - 1) && insoleChannelsValues[_channel + 1] > 0.600)
+        if (_channel < (INSOLE_CHANNELS - 1) && insoleChannelsValues[_channel + 1] > 0.500)
         {
           str += HL7_PAR_SEPARATOR;
         }
